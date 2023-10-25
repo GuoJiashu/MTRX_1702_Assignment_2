@@ -85,7 +85,7 @@ void estimatePosition(LinkedList* list, int aircraftID, EstimationData* estimate
             double heading_radians = last->data.heading * M_PI / 180.0;
             double north_velocity = speed_in_ms * sin(heading_radians);
             double east_velocity = speed_in_ms * cos(heading_radians);
-            int delta_time_seconds = estimates->time_seconds - last->data.time_seconds;
+            double delta_time_seconds = estimates->time_seconds - last->data.time_seconds;
             estimates->north_est = last->data.north + north_velocity * delta_time_seconds / 3600.0;
             estimates->east_est = last->data.east + east_velocity * delta_time_seconds / 3600.0;
             return;
@@ -95,6 +95,57 @@ void estimatePosition(LinkedList* list, int aircraftID, EstimationData* estimate
     estimates->north_est = 0.0;
     estimates->east_est = 0.0;
 }
+
+void checkSeparation(LinkedList* list, int aircraftID, double minimum_sep_distance, int hour, int minute, EstimationData* estimates) {
+    Node* last = list->head;
+    Node* currentAircraft = search(list, aircraftID);
+    double tcheck = hour * 3600 + minute * 60;
+
+    if (currentAircraft == NULL) {
+        printf("Aircraft (ID:%d) not currently in area of operation\n", aircraftID);
+        return;
+    }
+
+    while (last != NULL) {
+        if (last->data.id != aircraftID) {
+            double speed_in_km_last = last->data.speed * 3.6;
+            double heading_radians_last = last->data.heading * M_PI / 180.0;
+            double speed_in_km_current = currentAircraft->data.speed * 3.6;
+            double heading_radians_current = currentAircraft->data.heading * M_PI / 180.0;
+            double delta_time_seconds = tcheck - last->data.time_seconds;
+            double last_velocity_north = speed_in_km_last * sin(heading_radians_last);
+            double last_velocity_east = speed_in_km_last * cos(heading_radians_last);
+            estimates->north_est = last->data.north + last_velocity_north * delta_time_seconds / 3600.0;
+            estimates->east_est = last->data.east + last_velocity_east * delta_time_seconds / 3600.0;
+            double deltaPnorth = estimates->north_est - currentAircraft->data.north;
+            double deltaPeast = estimates->east_est - currentAircraft->data.east;
+            double deltavelocitynorth = last_velocity_north - speed_in_km_current * sin(heading_radians_current);
+            double deltavelocityeast = last_velocity_east - speed_in_km_current * cos(heading_radians_current);
+            double a = pow(deltavelocitynorth, 2) + pow(deltavelocityeast, 2);
+            double b = 2 * (deltavelocitynorth * deltaPnorth + deltavelocityeast * deltaPeast);
+            double c = pow(deltaPnorth, 2) + pow(deltaPeast, 2) - pow(minimum_sep_distance, 2);
+            double d = pow(b, 2) - 4 * a * c;
+
+            if (d < 0) {
+                printf("Safe\n");
+            } else if (d == 0) {
+                printf("Safe\n");
+            } else if (d > 0) {
+                double deltaint1 = (-b + sqrt(d)) / (2 * a);
+                double deltaint2 = (-b - sqrt(d)) / (2 * a);
+                double deltaintmin = fmin(deltaint1, deltaint2);
+                if (deltaintmin > 0) {
+                    double pn = currentAircraft->data.north + speed_in_km_current * sin(heading_radians_current) * deltaintmin;
+                    double pe = currentAircraft->data.east + speed_in_km_current * cos(heading_radians_current) * deltaintmin;
+                    printf("Separation issue: N:%.1f,E:%.1f\n", pn, pe);
+                    return;
+                }
+            }
+        }
+        last = last->next;
+    }
+}
+
 
 int main() {
     LinkedList aircraftList;
@@ -115,8 +166,9 @@ int main() {
             }
         } else if (line[0] == '*') {
             int hour, minute, aircraftID;
+            double minimum_sep_distance;
             char requestID[10];
-            sscanf(line, "*time:%d:%d,%[^,],%d", &hour, &minute, requestID, &aircraftID);
+            sscanf(line, "*time:%d:%d,%[^,],%d, %lf", &hour, &minute, requestID, &aircraftID, &minimum_sep_distance);
             if (strncmp(requestID, "close", 5) == 0) {
                 printf("closing\n");
                 freeList(&aircraftList);
@@ -143,7 +195,7 @@ int main() {
 
                 Node* current = aircraftList.head;
                 while (current != NULL) {
-                    double speed_in_ms = current->data.speed * 3.6; // Convert speed to m/s
+                    double speed_in_ms = current->data.speed * 3.6; // Convert speed to km/s
                     double heading_radians = current->data.heading * M_PI / 180.0;
                     double north_velocity = speed_in_ms * sin(heading_radians);
                     double east_velocity = speed_in_ms * cos(heading_radians);
@@ -160,8 +212,10 @@ int main() {
                 }
 
                 printf("Currently tracking %d aircraft\n", tracking);
+            } else if (strcmp(requestID, "check_separation") == 0){
+                EstimationData estimates;
+                checkSeparation(&aircraftList, aircraftID, minimum_sep_distance, hour, minute, &estimates);
             }
-
         }
     }
     return 0;
